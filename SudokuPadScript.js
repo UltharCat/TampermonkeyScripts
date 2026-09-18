@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SudokuPad 题库与云同步助手
+// @name         SudokuPad 题库与全能备份助手
 // @namespace    https://sudokupad.app/
-// @version      3.0
-// @description  为 SudokuPad 提供题库管理、多版本 WebDAV 云备份、云端快照回溯与一键同步功能
+// @version      3.1
+// @description  为 SudokuPad 提供题库管理、多版本 WebDAV 云备份、云端快照回溯与本地 JSON 导入导出全能工具
 // @author       You
 // @match        *://sudokupad.app/*
 // @match        *://*.sudokupad.app/*
@@ -29,7 +29,6 @@
         localStorage.setItem('sudoku_helper_title_cache', JSON.stringify(cache));
     }
 
-    // 动态捕获当前页面的数独特有标题
     function captureCurrentPuzzleTitle() {
         try {
             const uWin = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -109,7 +108,27 @@
         return puzzles.sort((a, b) => b.rawTime - a.rawTime);
     }
 
-    // ==================== 2. WebDAV 核心处理 ====================
+    // ==================== 2. 全量数据获取 ====================
+    function getFullBackupData() {
+        const backup = {};
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            backup[k] = localStorage.getItem(k);
+        }
+        return backup;
+    }
+
+    function applyImportedData(data) {
+        let count = 0;
+        Object.entries(data).forEach(([k, v]) => {
+            const val = typeof v === 'object' ? JSON.stringify(v) : v;
+            localStorage.setItem(k, val);
+            count++;
+        });
+        return count;
+    }
+
+    // ==================== 3. WebDAV 云端交互 ====================
     function getWebDAVConfig() {
         return {
             url: GM_getValue('webdav_url', ''),
@@ -130,16 +149,6 @@
         return 'Basic ' + btoa(unescape(encodeURIComponent(cfg.user + ':' + cfg.pass)));
     }
 
-    function getFullBackupData() {
-        const backup = {};
-        for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            backup[k] = localStorage.getItem(k);
-        }
-        return backup;
-    }
-
-    // 格式化时间戳生成独立备份名：sudokupad_backup_2026-09-18_17-00-00.json
     function generateBackupFileName() {
         const d = new Date();
         const pad = (n) => String(n).padStart(2, '0');
@@ -147,7 +156,6 @@
         return `sudokupad_backup_${ts}.json`;
     }
 
-    // 列出 WebDAV 目录下的所有备份快照
     function fetchWebDAVFileList(callback) {
         const cfg = getWebDAVConfig();
         if (!cfg.url || !cfg.user || !cfg.pass) {
@@ -204,11 +212,10 @@
                     callback(`请求失败（HTTP ${res.status}）`);
                 }
             },
-            onerror: () => callback('网络请求失败，请检查 WebDAV 地址！')
+            onerror: () => callback('网络连接失败，请检查 WebDAV 地址！')
         });
     }
 
-    // 还原指定文件内容
     function restoreFromFileUrl(url, displayName) {
         const cfg = getWebDAVConfig();
         if (!confirm(`确定要还原【${displayName}】的数据吗？\n当前本地记录将会被合并更新。`)) return;
@@ -221,26 +228,21 @@
                 if (res.status === 200) {
                     try {
                         const data = JSON.parse(res.responseText);
-                        let count = 0;
-                        Object.entries(data).forEach(([k, v]) => {
-                            const val = typeof v === 'object' ? JSON.stringify(v) : v;
-                            localStorage.setItem(k, val);
-                            count++;
-                        });
+                        const count = applyImportedData(data);
                         alert(`🎉 成功还原 ${count} 条记录！页面即将刷新。`);
                         location.reload();
                     } catch (e) {
-                        alert('❌ 备份文件已损坏：' + e.message);
+                        alert('❌ 备份文件损坏：' + e.message);
                     }
                 } else {
-                    alert(`❌ 获取文件失败（HTTP ${res.status}）`);
+                    alert(`❌ 下载文件失败（HTTP ${res.status}）`);
                 }
             },
             onerror: () => alert('❌ 下载文件失败，请检查网络！')
         });
     }
 
-    // ==================== 3. 弹窗 UI 渲染 ====================
+    // ==================== 4. 弹窗 UI 渲染 ====================
     function showModal() {
         const existing = document.getElementById('sudoku-helper-modal');
         if (existing) {
@@ -255,7 +257,7 @@
         modal.id = 'sudoku-helper-modal';
         modal.style.cssText = `
             position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 760px; max-height: 86vh; background: #1c1b2c; color: #e2e8f0;
+            width: 840px; max-width: 96vw; max-height: 88vh; background: #1c1b2c; color: #e2e8f0;
             border: 1px solid #36344d; border-radius: 12px; z-index: 2147483647;
             box-shadow: 0 20px 60px rgba(0,0,0,0.85); display: flex; flex-direction: column;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -300,21 +302,40 @@
                 </div>
             </div>
 
-            <!-- 第二行操作栏：搜索与三色核心按钮 -->
-            <div style="display:flex; gap:10px; padding:12px 20px; background:#1e1d30; border-bottom:1px solid #2d2b42; align-items:center;">
-                <input id="puzzle-search-input" type="text" placeholder="🔍 搜索作者或短链 ID..." style="flex:1; padding:7px 12px; background:#121120; border:1px solid #36344d; border-radius:8px; color:#fff; outline:none; font-size:13px;" />
-                <button id="btn-cloud-upload" style="background:#7c3aed; border:none; color:#fff; border-radius:8px; padding:7px 14px; cursor:pointer; font-size:13px; font-weight:bold; display:flex; align-items:center; gap:6px; white-space:nowrap;">
-                    ☁️ 新增备份到云端
-                </button>
-                <button id="btn-cloud-sync-latest" style="background:#0891b2; border:none; color:#fff; border-radius:8px; padding:7px 14px; cursor:pointer; font-size:13px; font-weight:bold; display:flex; align-items:center; gap:6px; white-space:nowrap;">
-                    🔄 同步最新备份
-                </button>
-                <button id="btn-cloud-versions" style="background:#d97706; border:none; color:#fff; border-radius:8px; padding:7px 14px; cursor:pointer; font-size:13px; font-weight:bold; display:flex; align-items:center; gap:6px; white-space:nowrap;">
-                    📜 云端版本列表
-                </button>
+            <!-- 第二行操作栏：搜索 + 云端功能组 + 分隔线 + 本地功能组 -->
+            <div style="display:flex; gap:8px; padding:12px 20px; background:#1e1d30; border-bottom:1px solid #2d2b42; align-items:center; flex-wrap:wrap;">
+                <!-- 搜索框 -->
+                <input id="puzzle-search-input" type="text" placeholder="🔍 搜索作者、标题或短链 ID..." style="flex:1; min-width:140px; padding:7px 12px; background:#121120; border:1px solid #36344d; border-radius:8px; color:#fff; outline:none; font-size:13px;" />
+
+                <!-- ☁️ 云端三色功能按钮组 -->
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button id="btn-cloud-upload" title="生成带时间戳的云端快照文件" style="background:#7c3aed; border:none; color:#fff; border-radius:8px; padding:7px 12px; cursor:pointer; font-size:12px; font-weight:bold; display:flex; align-items:center; gap:5px; white-space:nowrap;">
+                        ☁️ 新增备份到云端
+                    </button>
+                    <button id="btn-cloud-sync-latest" title="自动拉取并合并最新的一条云端快照" style="background:#0891b2; border:none; color:#fff; border-radius:8px; padding:7px 12px; cursor:pointer; font-size:12px; font-weight:bold; display:flex; align-items:center; gap:5px; white-space:nowrap;">
+                        🔄 同步最新备份
+                    </button>
+                    <button id="btn-cloud-versions" title="查看云端所有历史快照版本并选择性还原" style="background:#d97706; border:none; color:#fff; border-radius:8px; padding:7px 12px; cursor:pointer; font-size:12px; font-weight:bold; display:flex; align-items:center; gap:5px; white-space:nowrap;">
+                        📜 云端版本列表
+                    </button>
+                </div>
+
+                <!-- 竖直分隔条 -->
+                <div style="width:1px; height:20px; background:#383652; margin:0 2px;"></div>
+
+                <!-- 💾 本地导入导出按钮组 -->
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button id="btn-local-export" title="将全部进度和配置保存为本地 JSON 文件" style="background:#2563eb; border:none; color:#fff; border-radius:8px; padding:7px 11px; cursor:pointer; font-size:12px; font-weight:bold; display:flex; align-items:center; gap:4px; white-space:nowrap;">
+                        📥 本地导出
+                    </button>
+                    <button id="btn-local-import" title="从电脑本地选择 JSON 备份文件合并还原" style="background:#10b981; border:none; color:#fff; border-radius:8px; padding:7px 11px; cursor:pointer; font-size:12px; font-weight:bold; display:flex; align-items:center; gap:4px; white-space:nowrap;">
+                        📤 本地导入
+                    </button>
+                    <input type="file" id="local-import-file-input" accept=".json" style="display:none;" />
+                </div>
             </div>
 
-            <!-- 列表视图区（支持切换题库与版本列表） -->
+            <!-- 主内容滚动区 -->
             <div id="main-content-scroll" style="flex:1; overflow-y:auto; padding:10px 20px;">
                 <div id="puzzle-list-view"></div>
                 <div id="version-list-view" style="display:none;"></div>
@@ -328,7 +349,7 @@
         const searchInput = modal.querySelector('#puzzle-search-input');
         const settingsPanel = modal.querySelector('#webdav-settings-panel');
 
-        // 渲染本地题目列表
+        // 渲染题目列表
         function renderPuzzleList(filterText = '') {
             versionListView.style.display = 'none';
             puzzleListView.style.display = 'block';
@@ -368,13 +389,13 @@
 
         renderPuzzleList();
 
-        // 搜索监听
+        // 搜索过滤
         searchInput.oninput = (e) => renderPuzzleList(e.target.value);
 
         // 关闭弹窗
         modal.querySelector('#modal-close-btn').onclick = () => modal.remove();
 
-        // 设置面板开关与保存
+        // WebDAV 设置折叠与保存
         modal.querySelector('#toggle-settings-btn').onclick = () => {
             settingsPanel.style.display = settingsPanel.style.display === 'none' ? 'block' : 'none';
         };
@@ -402,7 +423,7 @@
             const fileName = generateBackupFileName();
             const targetUrl = currentCfg.url + fileName;
             const originalText = btnUpload.innerText;
-            btnUpload.innerText = '⏳ 正在上传...';
+            btnUpload.innerText = '⏳ 上传中...';
             btnUpload.disabled = true;
 
             const payload = JSON.stringify(getFullBackupData(), null, 2);
@@ -423,13 +444,13 @@
                     } else if (res.status === 401) {
                         alert('❌ 权限错误：WebDAV 账号或密码不正确！');
                     } else {
-                        alert(`❌ 上传失败（HTTP ${res.status}）：请确保 WebDAV 目录已在网盘中创建。`);
+                        alert(`❌ 上传失败（HTTP ${res.status}）：请确认 WebDAV 目录是否存在。`);
                     }
                 },
                 onerror: () => {
                     btnUpload.innerText = originalText;
                     btnUpload.disabled = false;
-                    alert('❌ 请求失败，请检查网络连接或 WebDAV 地址！');
+                    alert('❌ 请求失败，请检查网络或 WebDAV 目录地址！');
                 }
             });
         };
@@ -450,7 +471,7 @@
                     return;
                 }
                 if (files.length === 0) {
-                    alert('⚠️ 云端未找到任何备份文件，请先点击【☁️ 新增备份到云端】！');
+                    alert('⚠️ 云端暂无备份文件，请先点击【☁️ 新增备份到云端】！');
                     return;
                 }
 
@@ -459,7 +480,7 @@
             });
         };
 
-        // 3. 云端版本列表（支持查看历史并选定还原）
+        // 3. 云端版本列表
         const btnVersions = modal.querySelector('#btn-cloud-versions');
         btnVersions.onclick = () => {
             if (versionListView.style.display === 'block') {
@@ -523,9 +544,40 @@
                 });
             });
         };
+
+        // 4. 本地导出功能
+        modal.querySelector('#btn-local-export').onclick = () => {
+            const dataStr = JSON.stringify(getFullBackupData(), null, 2);
+            const blob = new Blob([dataStr], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `sudokupad_local_backup_${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        };
+
+        // 5. 本地导入功能
+        const localFileInput = modal.querySelector('#local-import-file-input');
+        modal.querySelector('#btn-local-import').onclick = () => localFileInput.click();
+        localFileInput.onchange = (e) => {
+            if (e.target.files && e.target.files[0]) {
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    try {
+                        const data = JSON.parse(ev.target.result);
+                        const count = applyImportedData(data);
+                        alert(`✅ 成功导入 ${count} 条本地记录！页面即将刷新。`);
+                        location.reload();
+                    } catch (err) {
+                        alert('❌ 本地文件解析失败，请检查是否是合法的 JSON 文件！\n' + err.message);
+                    }
+                };
+                reader.readAsText(e.target.files[0]);
+            }
+        };
     }
 
-    // ==================== 4. 保持悬浮按钮常驻 ====================
+    // ==================== 5. 悬浮按钮常驻 ====================
     function ensureTriggerButton() {
         if (document.getElementById('sudoku-helper-trigger-btn')) return;
         if (!document.body) return;
@@ -549,7 +601,6 @@
 
     setInterval(ensureTriggerButton, 1000);
 
-    // 快捷键支持：按 Alt + S 随时唤出
     window.addEventListener('keydown', (e) => {
         if (e.altKey && (e.key === 's' || e.key === 'S')) {
             e.preventDefault();
